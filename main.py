@@ -3,6 +3,7 @@ A kanji recognition script.
 """
 
 import argparse
+import json
 import numpy as np
 import cv2
 #import matplotlib.pyplot as plt
@@ -14,7 +15,7 @@ _DEBUG = True
 _LEARNING = True
 
 # Square root of the Pixels Per Kanji, a kanji will be fitted into an image of size PPKxPPK
-PPK = 512
+PPK = 256
 
 
 def parse_args():
@@ -29,7 +30,7 @@ def parse_args():
     )
     parser.add_argument(
         '-l', '--learning', help='Learning mode instead of recognition',
-        action="store_false"
+        action="store_true"
     )
     parser.add_argument(
         '--strokes', help='Strokes count for the kanji.', type=int
@@ -53,27 +54,49 @@ def format_image(image):
 
     Apply threshold, crop to the interesting part, and resize in 512x512.
     """
+    cv2.imshow("Input", image)
     threshold = 255 / 100 * 60
-    _, im_bw = cv2.threshold(image, threshold, 255, cv2.THRESH_OTSU)
+    _, image = cv2.threshold(image, threshold, 255, cv2.THRESH_OTSU)
+    cv2.imshow("Threshed", image)
     # Crop to an interesting bounding box
     # [[min_x, min_y], [max_x, max_y]]
-    bbox = [[np.inf, np.inf], [-np.inf, -np.inf]]
+    bbox = [[image.shape[1], image.shape[0]], [0, 0]]
     for i, line in enumerate(image):
-        for j, val in line:
+        for j, val in enumerate(line):
             if not val:
                 bbox = [
-                    [min(bbox[0][0], j), min(bbox[1][0], j)],
-                    [max(bbox[0][1], j), max(bbox[1][1], j)]
+                    [min(bbox[0][0], j), min(bbox[0][1], i)],
+                    [max(bbox[1][0], j), max(bbox[1][1], i)]
                 ]
-    bbox = [
-        [int(bbox[0][0]), int(bbox[1][0])], [int(bbox[0][1]), int(bbox[1][1])]
+    center = (
+        (bbox[0][0] + bbox[1][0]) // 2, (bbox[0][1] + bbox[1][1]) // 2
+    )
+    extend = max(bbox[1][0] - bbox[0][0], bbox[1][1] - bbox[0][1]) // 2
+    image = image[
+        slice(center[0] - extend, center[0] + extend),
+        slice(center[1] - extend, center[1] + extend)
     ]
-    image = image[bbox[0][0]:bbox[1][0], bbox[0][1]:bbox[1][1]]
+    cv2.imshow("Cropped", image)
     image = cv2.resize(image, (PPK, PPK), interpolation=cv2.INTER_LINEAR)
+    cv2.imshow("Resized", image)
     return image
 
 
 def morphological_simplify(image):
+    """
+    Try to process the image using morphological transfomations.
+
+    Parameters
+    ----------
+    image : TYPE
+        DESCRIPTION.
+
+    Returns
+    -------
+    im_bw : TYPE
+        DESCRIPTION.
+
+    """
     # Using morphological operations
     kernel = np.ones((5, 5), np.uint8)
     # Erosion then dilatation
@@ -105,7 +128,20 @@ def hessian(x):
 
 
 def gradient_simplify(image):
+    """
+    Use image gradient to compute main lines.
 
+    Parameters
+    ----------
+    image : TYPE
+        DESCRIPTION.
+
+    Returns
+    -------
+    im_bw : TYPE
+        DESCRIPTION.
+
+    """
     # Using gaussian blur
     kernel = [145, 145]
     im_bw = cv2.GaussianBlur(image, kernel, 0)
@@ -128,40 +164,18 @@ def gradient_simplify(image):
     return im_bw
 
 
-def sphere_simplify(image):
-    """
-    Detect keypoints in image based on growing spheres
-
-    Parameters
-    ----------
-    image : TYPE
-        Input inmage formatted.
-
-    Returns
-    -------
-    spheres : TYPE
-        Detected keypoints on the image.
-
-    """
-    # Apply gaussian blur
-    kernel = [15, 15]
-    image = cv2.GaussianBlur(image, kernel, 0)
-
-
-    spheres = []
-    threshold = 240
-    for i, line in enumerate(image):
-        for j, col in enumerate(line):
-            if col < threshold and not i % 20 and not j % 20:
-                spheres.append([j, i, 0])
+def grow_spheres(spheres, image, threshold):
     n_spheres = 0
     growing = True
+    maxxed = []
     while growing or n_spheres != len(spheres):
         n_spheres = len(spheres)
         print(n_spheres)
         # Grow spheres
         growing = False
         for s in spheres:
+            if s[:2] in maxxed:
+                continue
             dist = s[2] + 1
             grow = True
             for i, line in enumerate(image):
@@ -197,15 +211,22 @@ def sphere_simplify(image):
                 if grow:
                     s[:] = [x, y, dist]
                     growing = True
+            if not grow:
+                maxxed.append(s[:2])
         # Merge spheres
         deletables = set()
         for i, s in enumerate(spheres):
-            if s[2] == 0:
-                # deletables.add(i)
-                # continue
-                pass
             for j, other in enumerate(spheres[i + 1:]):
+                if i in deletables or j in deletables:
+                    continue
                 dist = np.sqrt((other[1] - s[1]) ** 2 + (other[0] - s[0]) ** 2)
+                if s[2] < other[2]:
+                    if dist <= other[2]:
+                        deletables.add(i)
+                elif other[2] < s[2]:
+                    if dist <= s[2]:
+                        deletables.add(i + j + 1)
+                continue
                 tests = (
                     (dist + other[2] <= s[2], i + j + 1),
                     (dist + s[2] <= other[2], i)
@@ -217,6 +238,64 @@ def sphere_simplify(image):
                     deletables.add(tests[1 - choice][1])
         for d in sorted(deletables, reverse=True):
             spheres.pop(d)
+    # Last merge for spheres of same size
+    n_spheres = -1
+    while n_spheres != len(spheres):
+        n_spheres = len(spheres)
+        deletables = set()
+        for i, s in enumerate(spheres):
+            for j, other in enumerate(spheres[i + 1:]):
+                if i in deletables or j in deletables:
+                    continue
+                dist = np.sqrt((other[1] - s[1]) ** 2 + (other[0] - s[0]) ** 2)
+                if s[2] < other[2]:
+                    if dist <= other[2]:
+                        deletables.add(i)
+                else:
+                    if dist <= s[2]:
+                        deletables.add(i + j + 1)
+                continue
+                tests = (
+                    (dist + other[2] <= s[2], i + j + 1),
+                    (dist + s[2] <= other[2], i)
+                )
+                choice = np.random.randint(1)
+                if tests[choice][0]:
+                    deletables.add(tests[choice][1])
+                elif tests[1 - choice][0]:
+                    deletables.add(tests[1 - choice][1])
+        for d in sorted(deletables, reverse=True):
+            spheres.pop(d)
+    return spheres
+
+
+def sphere_simplify(image):
+    """
+    Detect keypoints in image based on growing spheres
+
+    Parameters
+    ----------
+    image : TYPE
+        Input inmage formatted.
+
+    Returns
+    -------
+    spheres : TYPE
+        Detected keypoints on the image.
+
+    """
+    # Apply gaussian blur
+    kernel = [15, 15]
+    image = cv2.GaussianBlur(image, kernel, 0)
+
+
+    spheres = []
+    threshold = 240
+    for i, line in enumerate(image):
+        for j, col in enumerate(line):
+            if col < threshold and not i % 3 and not j % 3:
+                spheres.append([j, i, 0])
+    grow_spheres(spheres, image, threshold)
 
     if _DEBUG:
         # Draw spheres
@@ -228,7 +307,6 @@ def sphere_simplify(image):
                 1
             )
         cv2.imshow("Mini-spheres", sphered)
-        #cv2.waitKey(0)
     # Normalize sphere sizes
     spheres = tuple((s[0] / PPK, s[1] / PPK, s[2] / PPK) for s in spheres)
     return spheres
@@ -236,21 +314,30 @@ def sphere_simplify(image):
 
 
 def simplify_image(image):
+    """
+    Generate a set of keypoints usable by a computer for an image.
+
+    Parameters
+    ----------
+    image : TYPE
+        DESCRIPTION.
+
+    Returns
+    -------
+    TYPE
+        DESCRIPTION.
+
+    """
     # gradient_simplify(image)
     return sphere_simplify(image)
 
 
-def find_keypoints(image):
-    keypoints = []
-    return keypoints
-
-
 def kanji_by_strokes(strokes):
-    pass
+    data = json.load("data/handwritten.json")
+    return data[strokes]
 
 
 def match_to_kanji(input_vec, kanji, weights):
-
    #_, resis = np.linalg.lstsq(kanji, input_vec)[:2]
    return np.linalg.norm(kanji - input_vec) # * weights)
 
@@ -259,7 +346,13 @@ def register_keypoints(keypoints, n_features):
     """Register new keypoints set for a kanji."""
     points = tuple(sorted(keypoints, key=lambda x: x[2], reverse=True))
     points = [x[:2] for x in points[:n_features * 2]]
+    if _DEBUG:
+        print(
+            "Unormalized keypoints:",
+            list(map(lambda x: (x[0] * PPK, x[1] * PPK), points))
+        )
     print(points)
+    return points
 
 
 def get_kanji_candidates(keypoints, strokes):
@@ -279,16 +372,17 @@ def get_kanji_candidates(keypoints, strokes):
 def main():
     """Main descriptor function."""
     args = parse_args()
+    if _LEARNING:
+        print("LEARNING")
     image = get_image(args.image)
     image = format_image(image)
-    #image = np.ones((200, 200), dtype=np.uint8) * 255
-    #image[2, 2] = image[2, 3] = image[3, 3] = 0
-    #image[70:130, :] = 0
     keypoints = simplify_image(image)
     if _LEARNING:
         register_keypoints(keypoints, int(args.strokes))
     else:
         get_kanji_candidates(keypoints, strokes=int(args.strokes))
+    if _DEBUG:
+        cv2.waitKey(0)
 
 
 if __name__ == "__main__":
