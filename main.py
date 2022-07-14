@@ -23,9 +23,6 @@ def parse_args():
     global _LEARNING
     parser = argparse.ArgumentParser(description='Code for Feature Detection.')
     parser.add_argument(
-        'image', help='Path to input image.', default='ai.jpeg'
-    )
-    parser.add_argument(
         '--o', help='Path to output result'
     )
     parser.add_argument(
@@ -34,6 +31,12 @@ def parse_args():
     )
     parser.add_argument(
         '--strokes', help='Strokes count for the kanji.', type=int
+    )
+    parser.add_argument(
+        '--name', help='Only in learning mode. Helper to register kanji.'
+    )
+    parser.add_argument(
+        'image', help='Path to input image.', default='ai.jpeg'
     )
     args = parser.parse_args()
     _LEARNING = bool(args.learning)
@@ -165,6 +168,24 @@ def gradient_simplify(image):
 
 
 def grow_spheres(spheres, image, threshold):
+    """
+    Grow spheres to find keypoints.
+
+    Parameters
+    ----------
+    spheres : list[list[int, int, int]]
+        Spheres to grow.
+    image : TYPE
+        Input formatted image.
+    threshold : int
+        Threshold value of black and white.
+
+    Returns
+    -------
+    spheres : list[list[int, int, int]]
+        Remaining spheres after growing.
+
+    """
     n_spheres = 0
     growing = True
     maxxed = []
@@ -280,7 +301,7 @@ def sphere_simplify(image):
 
     Returns
     -------
-    spheres : TYPE
+    spheres : list[list[int, int, int]]
         Detected keypoints on the image.
 
     """
@@ -332,26 +353,43 @@ def simplify_image(image):
     return sphere_simplify(image)
 
 
-def kanji_by_strokes(strokes):
-    data = json.load("data/handwritten.json")
-    return data[strokes]
+def get_kanjis():
+    with open("data/handwritten.json") as database:
+        data = json.load(database)
+    return data
 
 
 def match_to_kanji(input_vec, kanji, weights):
    #_, resis = np.linalg.lstsq(kanji, input_vec)[:2]
+   total_dist = 0
+   for pos in input_vec:
+       dist = float('inf')
+       for target in kanji:
+           test_dist = np.sum((pos - target) ** 2)
+           if test_dist < dist:
+               dist = test_dist
+       total_dist += dist
+   return total_dist
    return np.linalg.norm(kanji - input_vec) # * weights)
 
 
-def register_keypoints(keypoints, n_features):
+def register_keypoints(keypoints, n_features, name=None):
     """Register new keypoints set for a kanji."""
     points = tuple(sorted(keypoints, key=lambda x: x[2], reverse=True))
-    points = [x[:2] for x in points[:n_features * 2]]
+    points = points[:n_features * 2]
     if _DEBUG:
         print(
             "Unormalized keypoints:",
-            list(map(lambda x: (x[0] * PPK, x[1] * PPK), points))
+            list(map(
+                lambda x: (int(x[0] * PPK), int(x[1] * PPK), int(x[2] * PPK)),
+                points
+            ))
         )
-    print(points)
+    points = [list(x[:2]) for x in points]
+    if name:
+        print(',\n["{0}", {1}]'.format(name, points))
+    else:
+        print(points)
     return points
 
 
@@ -361,12 +399,21 @@ def get_kanji_candidates(keypoints, strokes):
     circles = tuple(sorted(keypoints, key=lambda x: x[2], reverse=True))
     radi = np.array([x[2] for x in circles])
     input_vec = np.array([x[:2] for x in circles])
-    for i in range(2, 10):
-        for kanji in kanji_by_strokes(i // 2):
-            match_to_kanji(
-                input_vec[:i + 1], kanji,
-                radi[:i + 1] / sum(radi[:i + 1])
+    scores = []
+    kanjis = get_kanjis()
+    best = float('inf')
+    for kanji in kanjis:
+        for i in range(2, min(10, len(circles))):
+            scores.append([
+                kanji[0],
+                match_to_kanji(
+                    input_vec[:i + 1], kanji[1],
+                    radi[:i + 1] / sum(radi[:i + 1])
+                ),
+                i]
             )
+    scores = sorted(scores, key=lambda x: x[1])
+    print(scores)
 
 
 def main():
@@ -378,7 +425,7 @@ def main():
     image = format_image(image)
     keypoints = simplify_image(image)
     if _LEARNING:
-        register_keypoints(keypoints, int(args.strokes))
+        register_keypoints(keypoints, int(args.strokes), args.name)
     else:
         get_kanji_candidates(keypoints, strokes=int(args.strokes))
     if _DEBUG:
