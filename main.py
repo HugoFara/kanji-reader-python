@@ -23,6 +23,9 @@ def parse_args():
     global _LEARNING
     parser = argparse.ArgumentParser(description='Code for Feature Detection.')
     parser.add_argument(
+        'image', help='Path to input image.', default='ai.jpeg'
+    )
+    parser.add_argument(
         '--o', help='Path to output result'
     )
     parser.add_argument(
@@ -34,9 +37,6 @@ def parse_args():
     )
     parser.add_argument(
         '--name', help='Only in learning mode. Helper to register kanji.'
-    )
-    parser.add_argument(
-        'image', help='Path to input image.', default='ai.jpeg'
     )
     args = parser.parse_args()
     _LEARNING = bool(args.learning)
@@ -401,7 +401,7 @@ def get_kanji_candidates(keypoints, strokes):
     input_vec = np.array([x[:2] for x in circles])
     scores = []
     kanjis = get_kanjis()
-    best = float('inf')
+    # best = float('inf')
     for kanji in kanjis:
         for i in range(2, min(10, len(circles))):
             scores.append([
@@ -414,6 +414,7 @@ def get_kanji_candidates(keypoints, strokes):
             )
     scores = sorted(scores, key=lambda x: x[1])
     print(scores)
+    return scores[0]
 
 
 def main():
@@ -425,11 +426,12 @@ def main():
     image = format_image(image)
     keypoints = simplify_image(image)
     if _LEARNING:
-        register_keypoints(keypoints, int(args.strokes), args.name)
+        out = register_keypoints(keypoints, int(args.strokes), args.name)
     else:
-        get_kanji_candidates(keypoints, strokes=int(args.strokes))
+        out = get_kanji_candidates(keypoints, strokes=int(args.strokes))
     if _DEBUG:
         cv2.waitKey(0)
+    return out
 
 
 if __name__ == "__main__":
