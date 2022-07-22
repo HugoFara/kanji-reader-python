@@ -48,11 +48,12 @@ The first step is to format the image: apply an Otsu threshold, crop the the bla
 ![Image formatting](https://github.com/HugoFara/kanji-reader-python/raw/main/doc/image_formatting.png)
 
 Then, spheres are computed to find the biggest areas.
-![Spheres growth](https://github.com/HugoFara/kanji-reader-python/raw/main/doc/spheres_evolution.gif)
 
+![Spheres growth](https://github.com/HugoFara/kanji-reader-python/raw/main/doc/spheres_evolution.gif)
 ![Spheres final state](https://github.com/HugoFara/kanji-reader-python/raw/main/doc/terminal_spheres.png)
 
 In the end, we select the number of spheres that is at most two times the number of strokes for the kanji. It gives the following result.
+
 ![Decimated spheres](https://github.com/HugoFara/kanji-reader-python/raw/main/doc/decimated_spheres.png)
 
 
