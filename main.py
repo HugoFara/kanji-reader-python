@@ -6,7 +6,6 @@ import argparse
 import json
 import numpy as np
 import cv2
-#import matplotlib.pyplot as plt
 
 # Show debugging informations
 _DEBUG = True
@@ -189,7 +188,10 @@ def grow_spheres(spheres, image, threshold):
     n_spheres = 0
     growing = True
     maxxed = []
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    #video = cv2.VideoWriter('./video_001.mp4', fourcc, 1, (PPK, PPK))
     while growing or n_spheres != len(spheres):
+        # video.write(draw_spheres(spheres, image))
         n_spheres = len(spheres)
         print(n_spheres)
         # Grow spheres
@@ -205,7 +207,7 @@ def grow_spheres(spheres, image, threshold):
                 for j, val in enumerate(line):
                     if not grow or abs(j - s[0]) > dist:
                         continue
-                    if np.sqrt((i - s[1]) ** 2 + (j - s[0]) ** 2) > dist:
+                    if (i - s[1]) ** 2 + (j - s[0]) ** 2 > dist ** 2:
                         continue
                     # Now point is a neighbor
                     if val > threshold:
@@ -224,14 +226,14 @@ def grow_spheres(spheres, image, threshold):
                             for j, val in enumerate(line):
                                 if not grow or abs(j - x) > dist:
                                     continue
-                                if np.sqrt((i - y) ** 2 + (j - x) ** 2) > dist:
+                                if (i - y) ** 2 + (j - x) ** 2 > dist ** 2:
                                     continue
                                 # Now point is a neighbor
                                 if val > threshold:
                                     grow = False
-                if grow:
-                    s[:] = [x, y, dist]
-                    growing = True
+                        if grow:
+                            s[:] = [x, y, dist]
+                            growing = True
             if not grow:
                 maxxed.append(s[:2])
         # Merge spheres
@@ -287,7 +289,37 @@ def grow_spheres(spheres, image, threshold):
                     deletables.add(tests[1 - choice][1])
         for d in sorted(deletables, reverse=True):
             spheres.pop(d)
+    # video.release()
     return spheres
+
+
+def draw_spheres(spheres, image, title="Mini-spheres"):
+    """
+    Draw spheres.
+
+    Parameters
+    ----------
+    spheres : list[list[int]]
+        Spheres to draw.
+    image : TYPE
+        Input image in black and white.
+    title : str, optional
+        Drawing title. The default is "Mini-spheres".
+
+    Returns
+    -------
+    sphered : TYPE
+        Image with spheres on it.
+
+    """
+    sphered = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+    for s in spheres:
+        sphered = cv2.circle(
+            sphered, s[:2], s[2],
+            (s[2] % 3 * 255, (s[2] + 1) % 3 * 255, (s[2] + 2) % 3 * 255),
+            1
+        )
+    return sphered
 
 
 def sphere_simplify(image):
@@ -305,9 +337,10 @@ def sphere_simplify(image):
         Detected keypoints on the image.
 
     """
-    # Apply gaussian blur
-    kernel = [15, 15]
-    image = cv2.GaussianBlur(image, kernel, 0)
+    if not _LEARNING or True:
+        # Apply gaussian blur only for uncurated input
+        kernel = [15, 15]
+        image = cv2.GaussianBlur(image, kernel, 0)
 
 
     spheres = []
@@ -319,15 +352,8 @@ def sphere_simplify(image):
     grow_spheres(spheres, image, threshold)
 
     if _DEBUG:
-        # Draw spheres
-        sphered = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
-        for s in spheres:
-            sphered = cv2.circle(
-                sphered, s[:2], s[2],
-                (s[2] % 3 * 255, (s[2] + 1) % 3 * 255, (s[2] + 2) % 3 * 255),
-                1
-            )
-        cv2.imshow("Mini-spheres", sphered)
+        cv2.imshow("Mini-spheres", draw_spheres(spheres, image))
+
     # Normalize sphere sizes
     spheres = tuple((s[0] / PPK, s[1] / PPK, s[2] / PPK) for s in spheres)
     return spheres
@@ -354,23 +380,50 @@ def simplify_image(image):
 
 
 def get_kanjis():
+    """
+    Return ALL the kanji from the database.
+
+    Returns
+    -------
+    data : list[list[string, list[float]]]
+        Kanji from database.
+
+    """
     with open("data/handwritten.json") as database:
         data = json.load(database)
     return data
 
 
 def match_to_kanji(input_vec, kanji, weights):
-   #_, resis = np.linalg.lstsq(kanji, input_vec)[:2]
-   total_dist = 0
-   for pos in input_vec:
-       dist = float('inf')
-       for target in kanji:
-           test_dist = np.sum((pos - target) ** 2)
-           if test_dist < dist:
-               dist = test_dist
-       total_dist += dist
-   return total_dist
-   return np.linalg.norm(kanji - input_vec) # * weights)
+    """
+    Evaluation function return how close is an input kanjito the database model.
+
+    Parameters
+    ----------
+    input_vec : list[list[float]]
+        Input kanji.
+    kanji : list[list[float]]
+        Kanji to compare to.
+    weights : list[float]
+        Unused.
+
+    Returns
+    -------
+    total_dist : float
+        Total distance between the input and the database element.
+
+    """
+    #_, resis = np.linalg.lstsq(kanji, input_vec)[:2]
+    total_dist = 0
+    for pos in input_vec:
+        dist = float('inf')
+        for target in kanji:
+            test_dist = np.sum((pos - target) ** 2)
+            if test_dist < dist:
+                dist = test_dist
+        total_dist += dist
+    return total_dist
+    return np.linalg.norm(kanji - input_vec) # * weights)
 
 
 def register_keypoints(keypoints, n_features, name=None):
@@ -430,6 +483,14 @@ def main():
     else:
         out = get_kanji_candidates(keypoints, strokes=int(args.strokes))
     if _DEBUG:
+        if _LEARNING:
+            cv2.imshow(
+                "Final spheres",
+                draw_spheres(
+                    [[int(k[0] * PPK), int(k[1] * PPK), 5] for k in out],
+                    np.ones((PPK, PPK), dtype=np.uint8) * 255,
+                )
+            )
         cv2.waitKey(0)
     return out
 
